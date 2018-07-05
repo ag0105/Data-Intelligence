@@ -5,11 +5,11 @@ import re
 import hashlib
 
 #creating Elasticsearch connection:
-es_ag =elasticsearch.Elasticsearch("http://elastic:changeme@10.35.197.135:9200")
+es_ag =elasticsearch.Elasticsearch("http://elastic:changeme@10.350.180.135:9200")
 print("Connection started")
 
-if es_ag.indices.exists(index="mw_alert_analysis_ag_1"):
-   es_ag.indices.delete(index='mw_alert_analysis_ag_1')
+if es_ag.indices.exists(index="alert_analysis"):
+   es_ag.indices.delete(index='alert_analysis')
    print ("Index Deleted")
 
 
@@ -22,7 +22,7 @@ def rclean(x,loc=1):
 i=0
 #opening the CSV file
 try:
-	with open("MarkitWire-MON-4450.csv") as f:
+	with open("Alert.csv") as f:
 		for line in f:
 			value=line.split("\",\"")
 			created_date = parser.parse(lclean(value[0]))
@@ -62,7 +62,7 @@ try:
 			
 
 			
-			es_ag.index(index='mw_alert_analysis_ag_1', doc_type='mw_alert_analysis_ag_1', id=alarm_id, body={'date': created_date, 'associated_ticket': asso_ticket, 'alarm_group': alarm_group, 'sub_method': sub_method, 'check_title':check_title, 'summary':summary, 'severity': severity, 'business_service': business_service, 'assigned_group': assigned_group, 'associated_ticket_type':asso_ticket_type,'environment':environment})
+			es_ag.index(index='alert_analysis', doc_type='alert_analysis', id=alarm_id, body={'date': created_date, 'associated_ticket': asso_ticket, 'alarm_group': alarm_group, 'sub_method': sub_method, 'check_title':check_title, 'summary':summary, 'severity': severity, 'business_service': business_service, 'assigned_group': assigned_group, 'associated_ticket_type':asso_ticket_type,'environment':environment})
 			
 	print ("SUCCESS")
 			
