@@ -1,0 +1,628 @@
+########################################################################################
+##  author               : Ankur Goel	                                              ##
+##  Date                 : 06-June-2018                                               ##
+##  Desc        		     : This script creates an index which maps the alert and      ##
+##                         incident data of MMM.								      ##
+##                                                                                    ##
+########################################################################################
+
+
+import time
+import pdb
+from dateutil import parser
+import datetime
+from datetime import datetime as dt
+import logging
+import elasticsearch
+import hashlib
+import re
+import sys
+import io
+from elasticsearch_dsl import Search
+from elasticsearch.helpers import scan
+
+
+class Incident:
+    def __init__(self):
+        self._reference = ''
+        self._description = ''
+        self._detail = ''
+        self._opened = ''
+        self._state = ''
+        self._assignment_grp = ''
+        self._category = ''
+        self._subcategory = ''
+        self._component = ''
+        self._subcomponent = ''
+        self._type = ''
+        self._env = ''
+        self._host = ''
+        self._severity = ''
+        self._priority = ''
+        self._closecode_cat = ''
+        self._closecode_subcat = ''
+        self._dur_in_h =''
+
+    def __getitem__(self, item):
+        return self.__dict__[item]
+
+    def __setitem__(self, item, val):
+        self.__dict__[item][id] = val
+		
+
+
+    def printDetails(self):
+        print ('Reference: ', self._reference)
+        print ('Description: ', self._description)
+        print ('Detail: ', self._detail)
+        print ('Opened: ', self._opened)
+        print ('Status: ', self._state)
+        print ('Assignment Grp: ', self._assignment_grp)
+        print ('Category: ', self._category)
+        print ('SubCategory: ', self._subcategory)
+        print ('Component: ', self._component)
+        print ('Sub-Component: ', self._subcomponent)
+        print ('Type: ', self._type)
+        print ('Environment: ', self._env)
+        print ('Host: ', self._host)
+        print ('Severity: ', self._severity)
+        print ('Priority: ', self._priority)
+        print ('Cause Code Category: ', self._closecode_cat)
+        print ('Cause Code Sub-Category: ',self._closecode_subcat)
+        print ('Duration in Hours: ',self._dur_in_h)
+
+
+
+
+def identifyAttributes(message, inc):
+    #pdb.set_trace()
+    #check in subject infortmation
+    inc._env = ""
+    inc._component = ""
+    inc._host = ""
+    inc._description = ""
+
+    for line in message.split("\n"):
+        #env
+        if re.search(r'pre|PRE', line) and inc._env == "":
+            inc._env = 'PRE-PROD'
+        elif re.search(r'PRD|prd|Production|PRODUCTION|PROD|production|PGT|PCT', line) and inc._env == "":
+            inc._env = 'Production'
+        elif re.search(r'UAT|uat|MSMQU1|LNP6|lnp6', line) and inc._env == "":
+            inc._env = 'UAT'
+        elif re.search(r'trn|TRN|train|TRAIN|TRAINING|training', line) and inc._env == "":
+            inc._env = 'Training'
+
+        #component
+        if re.search(r'^Device:|^Service:|^Task:|^Target|^SubTask:', line):
+            line = line.split(":",1)
+            if line[1] != "":
+                line[1] = line[1].strip()
+                if inc._component == "":
+                    inc._component = line[1]
+                else:
+                    inc._component = "-".join([inc._component,line[1]])
+
+        #host
+        elif re.search(r'^HostName:|^Node:|^IP:|^IP Address:|^Source:', line):
+            line = line.split(":",1)
+            if line[1] != "":
+                line[1] = line[1].strip()
+                if inc._host == "":
+                    inc._host = line[1]
+                else:
+                    inc._host = "-".join([inc._host,line[1]])
+
+        #desc
+        elif re.search(r'^Description:|^Message:', line):
+            line = line.split(":",1)
+            if line[1] != "":
+                line[1] = line[1].strip()
+                inc._description = line[1]
+
+    if inc._env == "":
+        inc._env = 'Unknown'
+
+    if inc._component == "":
+        inc._component = 'Unknown'
+        inc._subcomponent = 'Unknown'
+    else:
+        identifyComponent(inc, inc._component)
+
+    if inc._host == "":
+        inc._host = 'Unknown'
+
+    if inc._description == "":
+        inc._description = 'Unknown'
+
+
+
+def identifyComponent(inc, keyword):
+
+    #pdb.set_trace()
+    #Server Issue
+    if keyword == 'check_nrpe_disk':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Disk Space Issue'
+    elif keyword == 'check_nrpe_uptime':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Server Uptime Check'
+    elif keyword == 'check_nrpe_puppet':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Server Puppet Check'
+    elif keyword == 'check_nrpe_uptime_puppet':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Server Uptime Puppet Check'
+    elif re.search(r'check_nrpe_ms_localtime|check_local_ntp_time|check_nrpe_localtime', keyword):
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Localtime Check'
+    elif re.search(r'check_nrpe_msload|check_nrpe_load', keyword):
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'CPU Load Issue'
+    elif re.search(r'check_nrpe_cpu', keyword):
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'CPU Issue'
+    elif keyword == 'check_nrpe_hpasm':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Server Health Issue'
+    elif keyword == 'check_nrpe_freemem':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Free Memory/Swap Memory Issue'
+    elif re.search(r'clearing_check_jvm_pool|Clear_Application', keyword):
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'JVM Memory Issue'
+    elif re.search(r'check_nrpe_connections|check_ucs_raid', keyword):
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Connection Issue'
+    elif keyword == 'check_nrpe_snmpd_proc':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Network Management Daemon Issue'
+    elif keyword == 'check_nrpe_ntpd_proc':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Network Time Protocol Daemon Issue'
+    elif keyword == 'check_nrpe_getsys_info':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'SysInfo Issue'
+    elif keyword == 'check_host':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Host Issue'
+    elif keyword == 'check_ssh':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'SSH Issue'
+    elif keyword == 'check_nfs':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Server NFS Issue'
+    elif keyword == 'check_applogs':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Applogs Space Issue'
+    elif keyword == 'check_ezd_proc':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Space Daemon Issue'
+    elif keyword == 'check_slapd_proc':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'LDAP Daemon Issue'
+    elif keyword == 'check_deploy_drone_proc':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'DeployDrone Daemon Issue'
+    elif keyword == 'check_veritas_vvr':
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'Veritas Replication Issue'
+
+
+    #Backup
+    elif re.search(r'-bkp|prodback|ms0|-stg|proddb|filerc-pgt', keyword):
+        inc._component = 'NetBackup'
+        inc._subcomponent = 'Backup Failed'
+    #MQ
+    elif re.search(r'check_MQ_Channel_Status|check_mq|MQ', keyword):
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'MQ Issue'
+    elif re.search(r'check_fteagtmon', keyword):
+        inc._component = 'Server Issue'
+        inc._subcomponent = 'MQ Issue'
+
+    #DB Issue
+    elif keyword == 'MW_Oracle_Messaging_Gateway':
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'MW ORACLE Message Gateway'
+    elif re.search(r'WLS_FORMS|ohs1', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'SWADMIN Issue'
+    elif keyword == 'Check_Average_Active_Sessions':
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'MW Active DB sessions'
+    elif keyword == 'MW_Stale_Session':
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'MW DB State Session'
+    elif re.search(r'MWDB_SQL_Monitor', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'MW DB SQL Above Threshold'
+    elif re.search(r'MWDB_Sched_Job_Core_Processing|BATCH_JOB_failure', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'MW DB Job Failed'
+    elif re.search(r'SCHEDULER_JOBS', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'MW DB Job Not Completed'
+    elif keyword == 'Check_Error_Log':
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'MW Report Request Error Count'
+    elif re.search(r'chat_exceptions', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'Chat Exceptions'
+    elif re.search(r'MIS_Job_PROD', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'MIS DB SQL Above Threshold'
+    elif re.search(r'ks00095|ks00103|ks00428|ks00095|ks00431|ks00097|ks00435|ks00428|ks00597|ks00104|ks00430|ks00100', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'DB Space Issue'
+    elif re.search(r'Cluster|Database Instance|Listener|Oracle High Availability Service|Automatic Storage Management|GTR_DC', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'DB Connection Issue'
+
+    elif re.search(r'check_aq_jobs', keyword):
+        inc._component = 'Database Issue'
+        inc._subcomponent = 'AQ Job Issue'
+    elif re.search(r'Splunk', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'Splunk Issue'
+    #Network Issue
+    elif re.search(r'Multicast_Check|Interface_Check|Node_Check|PacketLoss_Check|TrafficUtil_Check|ResponseTime_Check|CPU_Check|SNMP_Poll_Check|PSU_Check|BGP_Check|Hardware_Check|check_mw_lease_ext1|check_mw_lease_ext2', keyword):
+        inc._component = 'Network Issue'
+        inc._subcomponent = 'Lease Line Issue'
+    elif re.search(r'Ping', keyword):
+        inc._component = 'Connnection Issue'
+        inc._subcomponent = 'Reuters Feed Issue'
+    elif re.search(r'Production Tunnel|Production Swapwire', keyword):
+        inc._component = 'Connnection Issue'
+        inc._subcomponent = 'MW Tunneling Issue'
+    elif re.search(r'Error sending message', keyword):
+        inc._component = 'Network Issue'
+        inc._subcomponent = 'Swift Message Sending Failure'
+    elif re.search(r'swift_check_status', keyword):
+        inc._component = 'Network Issue'
+        inc._subcomponent = 'Swift Alliance Gateway Issue'
+    elif re.search(r'check_multipath', keyword):
+        inc._component = 'Network Issue'
+        inc._subcomponent = 'Node Service Check Timeout'
+    elif re.search(r'check_OSPF', keyword):
+        inc._component = 'Network Issue'
+        inc._subcomponent = 'OSPF Down'
+
+
+    #Applioation
+    elif keyword == 'check_tms_proc':
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'TMS Process Issue'
+    elif keyword == 'check_repo_proc':
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'REPO Process Issue'
+    elif re.search(r'check_memcached_proc|mc_check_memcached', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'MEMCACHED Process Issue'
+    elif re.search(r'MW API', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'MW API Issue'
+    elif re.search(r'Users_Disconnections', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'MW User Disconnections'
+    elif re.search(r'TC_Web|check_mserv_sellside_httpd_proc|check_mw_internet|tcweb', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'TC Web Issue'
+    elif keyword == 'check_opswire_proc':
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'Opswire Process Issue'
+    elif re.search(r'OpsWire|OPSWire|check_opswire_proc', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'OPSWire Issue'
+    elif re.search(r'check_nexus_power', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'Nexus Issue'
+    elif re.search(r'TMSPulse|TMS3WayFullNovation|TMSTransferPrePickup|TMSTunnel|TMSUniAmend|TMS_Pulse', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'MW Pulse Alerts'
+    elif re.search(r'METS|mets|check_http_appserver_1|check_http_appserver_2', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'METS Issue'
+    elif re.search(r'DSMATCH', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'DSMATCH Web Issue'
+    elif re.search(r'TRADESTP|TradeSTP|Check_STPTradeMessages', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'TRADESTP Issue'
+    elif re.search(r'MSFX BA|MSFX Broker Affirmations', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'FX BA Issue'
+    elif re.search(r'MSFX Options|check_msfx_proc', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'FX Options Issue'
+    elif re.search(r'Commodity', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'Commodity Tracker Issue'
+    elif re.search(r'SUGS', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'SUGS Issue'
+    elif re.search(r'TMT|TMT', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'TMT Issue'
+    elif re.search(r'AFD|afd', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'AFD Issue'
+    elif re.search(r'HKMA|hkma', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'HKMA Issue'
+    elif re.search(r'WILDFLY|wildfly|check_wildfy_proc_uat', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'WILDFLY Issue'
+    elif re.search(r'check_http', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'Static Quotes Issue'
+    elif re.search(r'Self Service-Login Page', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'Self Service Login Issue'
+    elif re.search(r'Markit.com|Investor relations|Marketing', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'Markit Web Page Access Issue'
+    elif re.search(r'UAT Connect', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'UAT Connect Issue'
+    elif re.search(r'DrillingWire', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'DrillingWire Issue'
+    elif re.search(r'mc_check', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'Markit Clear Issue'
+    elif re.search(r'PasswordReset', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'PasswordReset Issue'
+    elif re.search(r'MCA', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'MCA Web Issue'
+    elif re.search(r'EDM', keyword):
+        inc._component = 'Application Issue'
+        inc._subcomponent = 'EDM Issue'
+
+
+    #Interop Connector
+    elif re.search(r'check_http_interop_mso|check_interop_mso_process', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'MSO Issue'
+    elif re.search(r'check_interop_MMM_process|check_interop_connectors_process', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'Interop MW Issue'
+    elif re.search(r'check_http_interop_lchtakeup', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'LCH Takeup'
+    elif re.search(r'check_http_interop_lch', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'LCH'
+    elif re.search(r'check_http_interop_eurex', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'Eurex'
+    elif re.search(r'check_http_interop_ice', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'ICE'
+    elif re.search(r'check_http_interop_tri', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'TRI'
+    elif re.search(r'check_http_interop_cls', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'CLS'
+    elif re.search(r'check_http_interop_eds', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'EDS'
+    elif re.search(r'check_http_interop_vcon', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'VCON'
+    elif re.search(r'check_http_interop_fxcme', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'FX CME'
+    elif re.search(r'check_http_interop_cmenet', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'CMENET'
+    elif re.search(r'check_http_interop_cme', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'CME'
+    elif re.search(r'check_http_interop_ant', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'ANT'
+    elif re.search(r'check_http_interop_universalnet', keyword):
+        inc._component = 'Connector Issue'
+        inc._subcomponent = 'UNIVERSALNET'
+    else:
+        inc._component = keyword
+        inc._subcomponent = 'Unknown'
+		
+def identifyCloseCode(closecode, inc):
+    if closecode != "":
+        if len(closecode.split(">")) >= 2:
+            inc._closecode_cat= closecode.split(">")[0].strip()
+            inc._closecode_subcat= closecode.split(">")[1].strip()
+        else:
+            inc._closecode_cat= closecode.split(">")[0].strip()
+            inc._closecode_subcat= 'NA'
+
+    else:
+        inc._closecode_cat ='Blank'
+        inc._closecode_subcat ='NA'
+
+def calDuration(duration,inc):
+    #print "check1"
+    duration=duration.split(' ')
+    print duration
+    if duration[0]=='':
+        inc._dur_in_h= 0.0
+    elif (duration[1]=='Days' or duration[1]=='Day') and len(duration)==6:
+        inc._dur_in_h = 24*float(duration[0])+float(duration[2])+ float(duration[4])/60
+    elif (duration[1]=='Days' or duration[1]=='Day') and len(duration)==4 and (duration[3] == 'Hours' or duration[3]=='Hour'):
+        inc._dur_in_h = 24*float(duration[0])+float(duration[2])
+    elif (duration[1]=='Days' or duration[1]=='Day') and len(duration)==4 and (duration[3] == 'Minutes' or duration[3]=='Minute'):
+        inc._dur_in_h=24*float(duration[0])+ float(duration[2])/60
+    elif (duration[1]=='Days' or duration[1]=='Day') and len(duration)==2:
+        inc._dur_in_h=24*float(duration[0])
+
+    elif (duration[1] == 'Hours' or duration[1]=='Hour') and len(duration)==4:
+        inc._dur_in_h = float(duration[0])+ float(duration[2])/60
+    elif (duration[1] == 'Hours' or duration[1]=='Hour') and len(duration)==2:
+        inc._dur_in_h = float(duration[0])
+
+    elif (duration[1]=='Minutes' or duration[1]=='Minute') and len(duration)==2:
+        inc._dur_in_h = float(duration[0])/60
+    else:
+        inc._dur_in_h = 0.0
+    if (inc._dur_in_h !="Unknown"):
+        inc._dur_in_h=round(inc._dur_in_h,2)
+
+def lclean(x,loc=1):
+	return str(x)[loc:]
+
+def rclean(x,loc=1):
+	return str(x)[:-loc]
+	
+def checkEnvironment(check):
+	check= check.encode(encoding='UTF-8',errors='strict')
+	#print check
+	if ('Production' in check or 'PRD' in check or 'production' in check or 'prd' in check or 'PRODUCTION' in check or 'PROD' in check or 'PGT' in check or 'PCT' in check or 'MSMQP1' in check or 'Prod' in check):
+		environment='PROD'
+	elif ('uat' in check or 'UAT' in check or 'MSMQU1' in check or 'LNP6' in check or 'lnp6' in check):
+		environment='UAT'
+	elif ('training' in check or 'TRN' in check or 'trn' in check or 'training' in check or 'TRAIN' in check):
+		environment='TRN'
+	else:
+		environment= None
+	return environment
+			
+def identifyEnvironment(inc, summary):
+	if inc._env is "Production (PD)":
+		inc._env = 'PROD'
+	elif inc._env is "User Testing (UT)":
+		inc._env ='UAT'
+	else:
+		inc._env = checkEnvironment(inc._desc)
+		if inc._env is None:
+			inc._env = checkEnvironment(inc._description)
+	
+		if inc._env is None:
+			inc._env = checkEnvironment(inc._comm)
+		
+		if inc._env is None:
+			inc._env = checkEnvironment(inc._work_notes)
+		
+		if inc._env is None:
+			inc._env = checkEnvironment(inc._comm_work_notes)
+		
+		if inc._env is None:
+			inc._env = checkEnvironment(inc._summ_notes)
+	
+		if inc._env is None:
+			if ('ms' in inc._host or 'MS' in inc._host or 'prod' in inc._host or 'production' in inc._host or 'MSMQP1' in inc._host or 'mso.markitserv' in inc._host or 'prod' in inc._host or 'EXT' in inc._host or 'TMS_Pulse' in inc._host or 'LeasedLine' in inc._host or 'pd' in inc._host):
+				inc._env='PROD'
+			elif ('mso.uat.markitserv' in inc._host or 'MSMQU1' in inc._host or 'lnp6' in inc._host or 'UAT' in inc._host or 'uat' in inc._host):
+				inc._env='UAT'
+			elif ('train' in inc._host or 'TRN' in inc._host or 'trn' in inc._host or 'training' in inc._host):
+				inc._env='TRN'
+			elif ('Production' in summary or 'PRD' in summary or 'production' in summary or 'prd' in summary or 'PRODUCTION' in summary or 'PROD' in summary or 'PGT' in summary or 'PCT' in summary or 'MSMQP1' in summary or 'Prod' in summary):
+				inc._env='PROD'
+			elif ('uat' in summary or 'UAT' in summary or 'MSMQU1' in summary or 'LNP6' in summary or 'lnp6' in summary):
+				inc._env='UAT'
+			else:	
+				inc._env='Unknown'
+	print inc._env
+
+
+#Main
+i=1
+try:
+    mi_es = elasticsearch.Elasticsearch("http://elastic:changeme@100.345.197.195:9200") 
+    jf_es = elasticsearch.Elasticsearch("http://elastic:changeme@106.375.97.135:9200") 
+    print "Elastic connection made"
+    #Uncomment to build when running or the first time
+    #delete the index before inserting new data if it exists, for first time run
+    if jf_es.indices.exists(index="inc_alert_analysis"):
+        jf_es.indices.delete(index="inc_alert_analysis")
+        print "existing index deleted"
+    #pdb.set_trace()
+
+    #add time componetn to query
+    today = datetime.date.today().strftime('%m/%d/%Y %H.%M.%S')
+    yesterday = (datetime.date.today()-datetime.timedelta(1)).strftime('%m/%d/%Y %H.%M.%S')
+    ereyesterday = (datetime.date.today()-datetime.timedelta(2)).strftime('%m/%d/%Y %H.%M.%S')
+	 
+    with open("MMM-MON-4450.csv") as f:
+		for line in f:
+			value=line.split("\",\"")
+			created_date = parser.parse(lclean(value[0]))
+			asso_ticket = value[1]
+			alarm_group = value[2]
+			sub_method = value[3]
+			check_title = value[4]
+			summary = value[5]
+			severity = value[6]
+			business_service = value[7]
+			assigned_group = rclean(value[8].strip())
+			alarm_id= hashlib.md5(value[0]+value[1]+value[2]+value[3]+value[4]+value[5]+value[6]+value[7]+value[8]).hexdigest()
+			
+			if ('APPS' in asso_ticket):
+				asso_ticket_type = "APPS"
+			elif ('CHG' in asso_ticket):
+				asso_ticket_type = "CHANGE"
+			elif ('INC' in asso_ticket):
+				asso_ticket_type = "INCIDENT"
+			else:
+				asso_ticket_type = "Unknown"
+		
+			if (asso_ticket_type=="INCIDENT"):
+		
+				for doc in scan(mi_es,
+								 query={"query": {"bool": {"must": [{"match": {"_id":asso_ticket}},
+							 #Daily run
+							 #{"range": {"received" :{"gt": ereyesterday, "lt": yesterday}}}]}}},
+							 #Uncomment to build when running or the first time
+							 #First time run
+								 {"range": {"opened_at" :{"lt": ereyesterday}}}]}}},
+								 index="incidents", doc_type="incidents"):
+ 
+					if doc.has_key("_source") and doc.has_key("_id") and doc["_id"] == asso_ticket:
+						 print `i` +" Match found " + asso_ticket
+						 i=i+1
+						 print time.asctime( time.localtime(time.time()) )
+						 doc_id = doc["_id"]
+						 opened = doc["_source"]["opened_at"]
+						 category = doc["_source"]["u_category"]
+						 date_time = opened.split(' ')
+						 date = date_time[0]
+						 time_str = str(date_time[1]).split('.')
+						 hour = time_str[0]
+					 #pdb.set_trace()
+
+						 day=parser.parse(date_time[0]).strftime("%A")
+						 date = dt.strptime(date, '%m/%d/%Y')
+						 inc = Incident()
+						 inc._reference = doc_id
+						 inc._desc = doc["_source"]["short_description"]
+						 inc._detail = doc["_source"]["description"]
+						 inc._severity = doc["_source"]["severity"]
+						 inc._priority = doc["_source"]["priority"]
+						 inc._assignment_grp = doc["_source"]["assignment_group"]
+						 closecode= doc["_source"]["u_close_code"]
+						 dur=doc["_source"]["calendar_duration"]
+						 inc._comm = doc["_source"]["comments"]
+						 inc._work_notes = doc["_source"]["work_notes"]
+						 inc._summ_notes=doc["_source"]["u_summary_notes"]
+						 inc._comm_work_notes=doc["_source"]["comments_and_work_notes"]
+						 inc._env=doc["_source"]["u_environment"]						 
+            # identifyCategory(category, inc)
+
+						 identifyAttributes(inc._detail, inc)
+						 identifyCloseCode (closecode, inc)
+						 calDuration(dur, inc)
+						 identifyEnvironment(inc, summary)
+
+						 #inc.printDetails()
+					 
+						 #if (inc._reference == asso_ticket):
+
+						 jf_es.index(index='inc_alert_analysis', doc_type='inc_alert_analysis', id=inc._reference, body={'source': doc["_source"], 'environment':inc._env, 'category':inc._category, 'subcategory':inc._subcategory, 'description':inc._description, 'opened':inc._opened, 'date':date, 'day':day, 'time':date_time[1], 'hour':hour, 'status':inc._state, 'message':inc._detail, 'type':inc._type,'component':inc._component, 'subcomponent':inc._subcomponent, 'host': inc._host, 'environment':inc._env, 'severity': inc._severity, 'priority': inc._priority, 'assignment_group': inc._assignment_grp, 'close_code':inc._closecode_cat, 'close_code_sub': inc._closecode_subcat,'inc_duration': inc._dur_in_h,'alert_date': created_date, 'associated_ticket': asso_ticket, 'alarm_group': alarm_group, 'sub_method': sub_method, 'check_title':check_title, 'summary':summary, 'severity': severity, 'business_service': business_service, 'assigned_group': assigned_group, 'associated_ticket_type':asso_ticket_type})
+    print "SUCCESS"
+except Exception as e:
+    print(e)
+
